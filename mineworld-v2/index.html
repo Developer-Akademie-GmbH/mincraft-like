@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="de">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Three.js – FP + Sky/Fog/Lights + Blocks + Raycast</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { overflow: hidden; font-family: system-ui, sans-serif; }
+    #overlay {
+      position: fixed; inset: 0; display: grid; place-items: center;
+      background: rgba(0,0,0,.75); color: #fff; cursor: pointer; user-select: none;
+    }
+    #overlay .panel {
+      text-align: center; padding: 1rem 1.25rem;
+      border: 1px solid rgba(255,255,255,.2); border-radius: 12px;
+      background: rgba(0,0,0,.35);
+    }
+    #overlay h1 { margin: 0 0 .5rem; font-size: 1.25rem; }
+    #overlay p  { margin: 0; opacity: .85; }
+  </style>
+</head>
+
+<body>
+  <div id="overlay" tabindex="0" role="button" aria-label="Klick zum Starten">
+    <div class="panel">
+      <h1>Klick zum Starten</h1>
+      <p>WASD: Bewegen · Maus: Umschauen · Links: Block setzen · Rechts: Block entfernen · ESC: Entsperren</p>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
+
+    // Szene
+    const scene = new THREE.Scene();
+
+    // Himmel + Fog
+    const skyColor = 0xbfe9ff;
+    scene.fog = new THREE.Fog(skyColor, 10, 80);
+    const sky = new THREE.Mesh(
+      new THREE.SphereGeometry(500, 32, 16),
+      new THREE.MeshBasicMaterial({ color: skyColor, side: THREE.BackSide })
+    );
+    scene.add(sky);
+
+    // Kamera
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
+    camera.position.set(0, 1.6, 8);
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    // Licht
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x88aabb, 0.7);
+    scene.add(hemi);
+
+    const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+    sun.position.set(5, 10, 3);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    const s = 20;
+    sun.shadow.camera.left = -s; sun.shadow.camera.right = s;
+    sun.shadow.camera.top = s;   sun.shadow.camera.bottom = -s;
+    sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 60;
+    scene.add(sun);
+
+    // Boden (unter den Blöcken, empfängt Schatten)
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(200, 200),
+      new THREE.MeshStandardMaterial({ color: 0xdfe9f3, roughness: 1 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    ground.userData.isGround = true;
+    scene.add(ground);
+
+    // PointerLockControls
+    const controls = new PointerLockControls(camera, renderer.domElement);
+    scene.add(controls.getObject());
+    const overlay = document.getElementById('overlay');
+    overlay.addEventListener('click', () => controls.lock());
+    controls.addEventListener('lock',   () => { overlay.style.display = 'none'; });
+    controls.addEventListener('unlock', () => { overlay.style.display = 'grid'; });
+
+    // Movement (WASD)
+    const keys = { forward: false, backward: false, left: false, right: false };
+    const onKey = (down) => (e) => {
+      switch (e.code) {
+        case 'KeyW': case 'ArrowUp':    keys.forward = down; break;
+        case 'KeyS': case 'ArrowDown':  keys.backward = down; break;
+        case 'KeyA': case 'ArrowLeft':  keys.left = down; break;
+        case 'KeyD': case 'ArrowRight': keys.right = down; break;
+      }
+    };
+    document.addEventListener('keydown', onKey(true));
+    document.addEventListener('keyup', onKey(false));
+
+    // ====== Blocks-Setup =====================================================
+
+    const blockGeo = new THREE.BoxGeometry(1, 1, 1);
+
+    // Gras-Textur
+    const texLoader = new THREE.TextureLoader();
+    const grassTex = texLoader.load(
+      "https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/terrain/grasslight-big.jpg"
+    );
+    grassTex.wrapS = grassTex.wrapT = THREE.RepeatWrapping;
+    grassTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+    function randomTint() {
+      return new THREE.Color().setHSL(Math.random(), 0.35, 0.6);
+    }
+
+    // Block-Index zur Duplikat-Prüfung
+    const blockIndex = new Map(); // key: "x,y,z" (Basis y), value: Mesh
+
+    function keyOf(pos) { // pos: {x,y,z} mit y = Basis (Unterseite)
+      return `${pos.x},${pos.y},${pos.z}`;
+    }
+
+    function addBlock(position) {
+      const base = { x: Math.round(position.x), y: Math.round(position.y), z: Math.round(position.z) };
+      const k = keyOf(base);
+      if (blockIndex.has(k)) return blockIndex.get(k);
+
+      const mat = new THREE.MeshStandardMaterial({
+        map: grassTex,
+        color: randomTint(),
+        metalness: 0.05,
+        roughness: 0.8
+      });
+
+      const block = new THREE.Mesh(blockGeo, mat);
+      block.castShadow = true;
+      block.receiveShadow = true;
+      block.position.set(base.x, base.y + 0.5, base.z);
+      block.userData.isBlock = true;
+      block.userData.base = base;
+
+      scene.add(block);
+      blockIndex.set(k, block);
+      return block;
+    }
+
+    function removeBlockByMesh(mesh) {
+      if (!mesh?.userData?.isBlock) return;
+      const base = mesh.userData.base;
+      const k = keyOf(base);
+      scene.remove(mesh);
+      mesh.geometry?.dispose?.();
+      mesh.material?.map?.dispose?.();
+      mesh.material?.dispose?.();
+      blockIndex.delete(k);
+    }
+
+    // 20×20-Feld bei y=0
+    for (let ix = -10; ix < 10; ix++) {
+      for (let iz = -10; iz < 10; iz++) {
+        addBlock({ x: ix, y: 0, z: iz });
+      }
+    }
+
+    // ====== Demo-Würfel (optional) ===========================================
+    const demoCube = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: 0x3399ff, metalness: 0.1, roughness: 0.4 })
+    );
+    demoCube.position.set(0, 3, -3);
+    demoCube.castShadow = true;
+    scene.add(demoCube);
+
+    // ====== Raycasting (aus Kameramitte) ====================================
+
+    const raycaster = new THREE.Raycaster();
+    const centerNDC = new THREE.Vector2(0, 0); // Mitte des Screens
+
+    function raycastFromCamera() {
+      raycaster.setFromCamera(centerNDC, camera);
+
+      // Kandidaten: alle Blocks + der Boden
+      const candidates = [ground, ...Array.from(blockIndex.values())];
+      const intersects = raycaster.intersectObjects(candidates, false);
+      return intersects[0] || null;
+    }
+
+    // Kontextmenü deaktivieren
+    document.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    // Klick-Handling
+    document.addEventListener('mousedown', (e) => {
+      if (!controls.isLocked) return;
+
+      const hit = raycastFromCamera();
+      if (!hit) return;
+
+      // Links: Block setzen
+      if (e.button === 0) {
+        const obj = hit.object;
+
+        if (obj.userData.isBlock) {
+          // Neben anliegende Zelle entlang der getroffenen Face-Normalen
+          const normalWorld = hit.face.normal.clone().transformDirection(obj.matrixWorld);
+          const targetCenter = obj.position.clone().add(normalWorld); // Center der Nachbarzelle
+          const base = {
+            x: Math.round(targetCenter.x),
+            y: Math.round(targetCenter.y - 0.5),
+            z: Math.round(targetCenter.z),
+          };
+          addBlock(base);
+        } else if (obj.userData.isGround) {
+          // Auf dem Boden platzieren: Center runden, Basis y=0
+          const p = hit.point.clone();
+          const base = {
+            x: Math.round(p.x),
+            y: 0,
+            z: Math.round(p.z),
+          };
+          addBlock(base);
+        }
+      }
+
+      // Rechts: Block entfernen
+      if (e.button === 2) {
+        if (hit.object.userData.isBlock) {
+          removeBlockByMesh(hit.object);
+        }
+      }
+    });
+
+    // ====== Movement/Loop ====================================================
+    const velocity = new THREE.Vector3();
+    const direction = new THREE.Vector3();
+    let prev = performance.now();
+
+    function animate() {
+      const now = performance.now();
+      const delta = (now - prev) / 1000;
+      prev = now;
+
+      demoCube.rotation.x += 0.6 * delta;
+      demoCube.rotation.y += 0.8 * delta;
+
+      if (controls.isLocked) {
+        const damping = 8.0;
+        velocity.x -= velocity.x * damping * delta;
+        velocity.z -= velocity.z * damping * delta;
+
+        direction.set(
+          (keys.right ? 1 : 0) - (keys.left ? 1 : 0),
+          0,
+          (keys.forward ? 1 : 0) - (keys.backward ? 1 : 0)
+        );
+        if (direction.lengthSq() > 0) direction.normalize();
+
+        const accel = 12.0;
+        velocity.x -= direction.x * accel * delta;
+        velocity.z -= direction.z * accel * delta;
+
+        controls.moveRight(-velocity.x * delta);
+        controls.moveForward(-velocity.z * delta);
+      }
+
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+    animate();
+
+    // Resize
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    });
+  </script>
+</body>
+</html>
