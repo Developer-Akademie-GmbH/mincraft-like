@@ -10,38 +10,44 @@ class Controls {
   // movement functions receive player object and mutate position/velocity
   moveForward(player: any) {
     if (!player) return;
-    const yaw = player.rotation?.y || 0;
-    const dx = -Math.sin(yaw) * 0.1;
-    const dz = -Math.cos(yaw) * 0.1;
-    player.position.x += dx;
-    player.position.z += dz;
+  const yaw = player.rotation?.y || 0;
+  const step = 0.1;
+  const dx = Math.sin(yaw) * step;
+  const dz = Math.cos(yaw) * step;
+  player.position.x += dx;
+  player.position.z += dz;
   }
 
   moveBackward(player: any) {
     if (!player) return;
-    const yaw = player.rotation?.y || 0;
-    const dx = Math.sin(yaw) * 0.1;
-    const dz = Math.cos(yaw) * 0.1;
-    player.position.x += dx;
-    player.position.z += dz;
+  const yaw = player.rotation?.y || 0;
+  const step = 0.1;
+  const dx = -Math.sin(yaw) * step;
+  const dz = -Math.cos(yaw) * step;
+  player.position.x += dx;
+  player.position.z += dz;
   }
 
   moveLeft(player: any) {
     if (!player) return;
-    const yaw = player.rotation?.y || 0;
-    const dx = -Math.cos(yaw) * 0.1;
-    const dz = Math.sin(yaw) * 0.1;
-    player.position.x += dx;
-    player.position.z += dz;
+  const yaw = player.rotation?.y || 0;
+  const step = 0.1;
+  // right vector
+  const rx = Math.cos(yaw) * step;
+  const rz = -Math.sin(yaw) * step;
+  // left is negative right
+  player.position.x -= rx;
+  player.position.z -= rz;
   }
 
   moveRight(player: any) {
     if (!player) return;
-    const yaw = player.rotation?.y || 0;
-    const dx = Math.cos(yaw) * 0.1;
-    const dz = -Math.sin(yaw) * 0.1;
-    player.position.x += dx;
-    player.position.z += dz;
+  const yaw = player.rotation?.y || 0;
+  const step = 0.1;
+  const dx = Math.cos(yaw) * step;
+  const dz = -Math.sin(yaw) * step;
+  player.position.x += dx;
+  player.position.z += dz;
   }
 
   jump(player: any) {
