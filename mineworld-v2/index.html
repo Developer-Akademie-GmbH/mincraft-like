@@ -4,13 +4,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Three.js – FP + Sky/Fog/Lights + Blocks + Raycast</title>
+  <title>Three.js – FP + Sky/Fog/Lights + Blocks + Raycast + Physics</title>
   <style>
     html, body { height: 100%; margin: 0; }
     body { overflow: hidden; font-family: system-ui, sans-serif; }
+
     #overlay {
       position: fixed; inset: 0; display: grid; place-items: center;
       background: rgba(0,0,0,.75); color: #fff; cursor: pointer; user-select: none;
+      z-index: 10;
     }
     #overlay .panel {
       text-align: center; padding: 1rem 1.25rem;
@@ -19,6 +21,30 @@
     }
     #overlay h1 { margin: 0 0 .5rem; font-size: 1.25rem; }
     #overlay p  { margin: 0; opacity: .85; }
+
+    /* Crosshair & HUD */
+    #crosshair{
+      position: fixed;
+      left: 50%; top: 50%;
+      width: 16px; height: 16px;
+      margin-left: -8px; margin-top: -8px;
+      pointer-events: none; opacity: .9;
+    }
+    #crosshair::before, #crosshair::after{
+      content: ""; position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      background: #fff; border-radius: 1px;
+    }
+    #crosshair::before{ width: 14px; height: 2px; }
+    #crosshair::after{  width: 2px;  height: 14px; }
+
+    #hud{
+      position: fixed; left: 12px; bottom: 12px;
+      padding: .45rem .6rem; font: 12px/1.2 system-ui, sans-serif;
+      color: #fff; background: rgba(0,0,0,.4);
+      border: 1px solid rgba(255,255,255,.15); border-radius: 8px;
+      pointer-events: none;
+    }
   </style>
 </head>
 
@@ -26,9 +52,12 @@
   <div id="overlay" tabindex="0" role="button" aria-label="Klick zum Starten">
     <div class="panel">
       <h1>Klick zum Starten</h1>
-      <p>WASD: Bewegen · Maus: Umschauen · Links: Block setzen · Rechts: Block entfernen · ESC: Entsperren</p>
+      <p>WASD: Bewegen · Space: Springen · Maus: Umschauen · Links: Block setzen · Rechts: Block entfernen · ESC: Entsperren</p>
     </div>
   </div>
+
+  <div id="crosshair" aria-hidden="true"></div>
+  <div id="hud">Block: <span id="hud-target">–</span></div>
 
   <script type="importmap">
   {
@@ -47,8 +76,8 @@
     const scene = new THREE.Scene();
 
     // Himmel + Fog
-    const skyColor = 0xbfe9ff;
-    scene.fog = new THREE.Fog(skyColor, 10, 80);
+    const skyColor = 0xEAF6FF;
+    scene.fog = new THREE.Fog(skyColor, 12, 100);
     const sky = new THREE.Mesh(
       new THREE.SphereGeometry(500, 32, 16),
       new THREE.MeshBasicMaterial({ color: skyColor, side: THREE.BackSide })
@@ -57,7 +86,6 @@
 
     // Kamera
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
-    camera.position.set(0, 1.6, 8);
 
     // Renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -65,26 +93,33 @@
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.15;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     document.body.appendChild(renderer.domElement);
 
     // Licht
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x88aabb, 0.7);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0xcfd8dc, 1.0);
     scene.add(hemi);
 
-    const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-    sun.position.set(5, 10, 3);
+    const sun = new THREE.DirectionalLight(0xffffff, 1.75);
+    sun.position.set(8, 16, 6);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
-    const s = 20;
+    const s = 30;
     sun.shadow.camera.left = -s; sun.shadow.camera.right = s;
     sun.shadow.camera.top = s;   sun.shadow.camera.bottom = -s;
-    sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 60;
+    sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 120;
+    sun.shadow.bias = -0.0003;
+    sun.shadow.normalBias = 0.04;
     scene.add(sun);
 
-    // Boden (unter den Blöcken, empfängt Schatten)
+    scene.add(new THREE.AmbientLight(0xffffff, 0.15));
+
+    // Boden
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(200, 200),
-      new THREE.MeshStandardMaterial({ color: 0xdfe9f3, roughness: 1 })
+      new THREE.MeshStandardMaterial({ color: 0xE3F2FD, roughness: 1 })
     );
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
@@ -95,28 +130,48 @@
     const controls = new PointerLockControls(camera, renderer.domElement);
     scene.add(controls.getObject());
     const overlay = document.getElementById('overlay');
+    const hudTargetEl = document.getElementById('hud-target');
     overlay.addEventListener('click', () => controls.lock());
     controls.addEventListener('lock',   () => { overlay.style.display = 'none'; });
     controls.addEventListener('unlock', () => { overlay.style.display = 'grid'; });
 
-    // Movement (WASD)
+    // ====== Player-Physik-Parameter ==========================================
+    const GROUND_HEIGHT = 1.0;
+    const EYE_HEIGHT    = 1.0;
+    const WALK_SPEED    = 5.0;
+    const GRAVITY       = 22.0;
+    const JUMP_SPEED    = 8.5;
+
+    controls.getObject().position.set(0, GROUND_HEIGHT + EYE_HEIGHT, 8);
+
     const keys = { forward: false, backward: false, left: false, right: false };
-    const onKey = (down) => (e) => {
+    let wantJump = false;
+
+    const onKeyDown = (e) => {
       switch (e.code) {
-        case 'KeyW': case 'ArrowUp':    keys.forward = down; break;
-        case 'KeyS': case 'ArrowDown':  keys.backward = down; break;
-        case 'KeyA': case 'ArrowLeft':  keys.left = down; break;
-        case 'KeyD': case 'ArrowRight': keys.right = down; break;
+        case 'KeyW': case 'ArrowUp':    keys.forward = true; break;
+        case 'KeyS': case 'ArrowDown':  keys.backward = true; break;
+        case 'KeyA': case 'ArrowLeft':  keys.left = true; break;
+        case 'KeyD': case 'ArrowRight': keys.right = true; break;
+        case 'Space': e.preventDefault(); wantJump = true; break;
       }
     };
-    document.addEventListener('keydown', onKey(true));
-    document.addEventListener('keyup', onKey(false));
+    const onKeyUp = (e) => {
+      switch (e.code) {
+        case 'KeyW': case 'ArrowUp':    keys.forward = false; break;
+        case 'KeyS': case 'ArrowDown':  keys.backward = false; break;
+        case 'KeyA': case 'ArrowLeft':  keys.left = false; break;
+        case 'KeyD': case 'ArrowRight': keys.right = false; break;
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
 
     // ====== Blocks-Setup =====================================================
 
     const blockGeo = new THREE.BoxGeometry(1, 1, 1);
 
-    // Gras-Textur
+    // Gras-Textur (normal, kein Pixel-Look)
     const texLoader = new THREE.TextureLoader();
     const grassTex = texLoader.load(
       "https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/terrain/grasslight-big.jpg"
@@ -125,14 +180,35 @@
     grassTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
 
     function randomTint() {
-      return new THREE.Color().setHSL(Math.random(), 0.35, 0.6);
+      return new THREE.Color().setHSL(Math.random(), 0.35, 0.65);
     }
 
-    // Block-Index zur Duplikat-Prüfung
-    const blockIndex = new Map(); // key: "x,y,z" (Basis y), value: Mesh
+    const blockIndex = new Map();
+    const columnTops = new Map();
+    const keyOf = (pos) => `${pos.x},${pos.y},${pos.z}`;
+    const colKey = (x, z) => `${x},${z}`;
 
-    function keyOf(pos) { // pos: {x,y,z} mit y = Basis (Unterseite)
-      return `${pos.x},${pos.y},${pos.z}`;
+    function colAddTop(x, z, topY) {
+      const k = colKey(x, z);
+      const arr = columnTops.get(k) || [];
+      arr.push(topY);
+      columnTops.set(k, arr);
+    }
+    function colRemoveTop(x, z, topY) {
+      const k = colKey(x, z);
+      const arr = columnTops.get(k);
+      if (!arr) return;
+      const idx = arr.indexOf(topY);
+      if (idx !== -1) arr.splice(idx, 1);
+      if (arr.length) columnTops.set(k, arr);
+      else columnTops.delete(k);
+    }
+    function highestTopAt(x, z) {
+      const arr = columnTops.get(colKey(x, z));
+      if (!arr || !arr.length) return GROUND_HEIGHT;
+      let m = arr[0];
+      for (let i = 1; i < arr.length; i++) if (arr[i] > m) m = arr[i];
+      return m;
     }
 
     function addBlock(position) {
@@ -144,7 +220,7 @@
         map: grassTex,
         color: randomTint(),
         metalness: 0.05,
-        roughness: 0.8
+        roughness: 0.85
       });
 
       const block = new THREE.Mesh(blockGeo, mat);
@@ -156,6 +232,7 @@
 
       scene.add(block);
       blockIndex.set(k, block);
+      colAddTop(base.x, base.z, base.y + 1.0);
       return block;
     }
 
@@ -164,60 +241,55 @@
       const base = mesh.userData.base;
       const k = keyOf(base);
       scene.remove(mesh);
-      mesh.geometry?.dispose?.();
-      mesh.material?.map?.dispose?.();
       mesh.material?.dispose?.();
       blockIndex.delete(k);
+      colRemoveTop(base.x, base.z, base.y + 1.0);
     }
 
-    // 20×20-Feld bei y=0
     for (let ix = -10; ix < 10; ix++) {
       for (let iz = -10; iz < 10; iz++) {
         addBlock({ x: ix, y: 0, z: iz });
       }
     }
 
-    // ====== Demo-Würfel (optional) ===========================================
-    const demoCube = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshStandardMaterial({ color: 0x3399ff, metalness: 0.1, roughness: 0.4 })
-    );
-    demoCube.position.set(0, 3, -3);
-    demoCube.castShadow = true;
-    scene.add(demoCube);
-
-    // ====== Raycasting (aus Kameramitte) ====================================
-
+    // ====== Raycasting ======================================================
     const raycaster = new THREE.Raycaster();
-    const centerNDC = new THREE.Vector2(0, 0); // Mitte des Screens
+    const centerNDC = new THREE.Vector2(0, 0);
 
     function raycastFromCamera() {
       raycaster.setFromCamera(centerNDC, camera);
-
-      // Kandidaten: alle Blocks + der Boden
       const candidates = [ground, ...Array.from(blockIndex.values())];
       const intersects = raycaster.intersectObjects(candidates, false);
       return intersects[0] || null;
     }
 
-    // Kontextmenü deaktivieren
+    function aimedBaseFromHit(hit){
+      if (hit.object.userData?.isBlock) return hit.object.userData.base;
+      if (hit.object.userData?.isGround) {
+        const p = hit.point;
+        return { x: Math.round(p.x), y: 0, z: Math.round(p.z) };
+      }
+      return null;
+    }
+
+    function updateHUD(){
+      const hit = raycastFromCamera();
+      if (!hit) { hudTargetEl.textContent = "–"; return; }
+      const base = aimedBaseFromHit(hit);
+      hudTargetEl.textContent = base ? `x:${base.x} y:${base.y} z:${base.z}` : "–";
+    }
+
     document.addEventListener('contextmenu', (e) => e.preventDefault());
 
-    // Klick-Handling
     document.addEventListener('mousedown', (e) => {
       if (!controls.isLocked) return;
-
       const hit = raycastFromCamera();
       if (!hit) return;
-
-      // Links: Block setzen
       if (e.button === 0) {
         const obj = hit.object;
-
         if (obj.userData.isBlock) {
-          // Neben anliegende Zelle entlang der getroffenen Face-Normalen
           const normalWorld = hit.face.normal.clone().transformDirection(obj.matrixWorld);
-          const targetCenter = obj.position.clone().add(normalWorld); // Center der Nachbarzelle
+          const targetCenter = obj.position.clone().add(normalWorld);
           const base = {
             x: Math.round(targetCenter.x),
             y: Math.round(targetCenter.y - 0.5),
@@ -225,18 +297,11 @@
           };
           addBlock(base);
         } else if (obj.userData.isGround) {
-          // Auf dem Boden platzieren: Center runden, Basis y=0
           const p = hit.point.clone();
-          const base = {
-            x: Math.round(p.x),
-            y: 0,
-            z: Math.round(p.z),
-          };
+          const base = { x: Math.round(p.x), y: 0, z: Math.round(p.z) };
           addBlock(base);
         }
       }
-
-      // Rechts: Block entfernen
       if (e.button === 2) {
         if (hit.object.userData.isBlock) {
           removeBlockByMesh(hit.object);
@@ -244,45 +309,50 @@
       }
     });
 
-    // ====== Movement/Loop ====================================================
-    const velocity = new THREE.Vector3();
-    const direction = new THREE.Vector3();
-    let prev = performance.now();
+    // ====== Physik ==========================================================
+    let vY = 0;
+    let onGround = false;
 
+    function updatePlayerPhysics(delta){
+      const obj = controls.getObject();
+      let mx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+      let mz = (keys.forward ? 1 : 0) - (keys.backward ? 1 : 0);
+      if (mx || mz) {
+        const len = Math.hypot(mx, mz);
+        mx /= len; mz /= len;
+        controls.moveRight(mx * WALK_SPEED * delta);
+        controls.moveForward(mz * WALK_SPEED * delta);
+      }
+      if (wantJump && onGround) vY = JUMP_SPEED;
+      wantJump = false;
+      vY -= GRAVITY * delta;
+      obj.position.y += vY * delta;
+      const gx = Math.round(obj.position.x);
+      const gz = Math.round(obj.position.z);
+      const groundTop = highestTopAt(gx, gz);
+      const minY = groundTop + EYE_HEIGHT;
+      if (obj.position.y < minY) {
+        obj.position.y = minY;
+        vY = 0;
+        onGround = true;
+      } else {
+        onGround = false;
+      }
+    }
+
+    // ====== Loop ============================================================
+    let prev = performance.now();
     function animate() {
       const now = performance.now();
-      const delta = (now - prev) / 1000;
+      const delta = Math.min((now - prev) / 1000, 0.05);
       prev = now;
-
-      demoCube.rotation.x += 0.6 * delta;
-      demoCube.rotation.y += 0.8 * delta;
-
-      if (controls.isLocked) {
-        const damping = 8.0;
-        velocity.x -= velocity.x * damping * delta;
-        velocity.z -= velocity.z * damping * delta;
-
-        direction.set(
-          (keys.right ? 1 : 0) - (keys.left ? 1 : 0),
-          0,
-          (keys.forward ? 1 : 0) - (keys.backward ? 1 : 0)
-        );
-        if (direction.lengthSq() > 0) direction.normalize();
-
-        const accel = 12.0;
-        velocity.x -= direction.x * accel * delta;
-        velocity.z -= direction.z * accel * delta;
-
-        controls.moveRight(-velocity.x * delta);
-        controls.moveForward(-velocity.z * delta);
-      }
-
+      if (controls.isLocked) updatePlayerPhysics(delta);
+      updateHUD();
       renderer.render(scene, camera);
       requestAnimationFrame(animate);
     }
     animate();
 
-    // Resize
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
@@ -291,4 +361,5 @@
     });
   </script>
 </body>
+
 </html>
