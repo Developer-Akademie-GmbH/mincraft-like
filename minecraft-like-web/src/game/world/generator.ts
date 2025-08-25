@@ -1,4 +1,4 @@
-export function generateWorld(width: number, height: number, depth: number): number[][][] {
+export function generateWorld(width: number = 32, height: number = 16, depth: number = 32): number[][][] {
     const world: number[][][] = [];
 
     for (let x = 0; x < width; x++) {

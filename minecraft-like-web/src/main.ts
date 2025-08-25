@@ -20,13 +20,17 @@ const controls = new Controls(canvas);
 let lastTime = 0;
 
 // KORREKT: player zuerst, controls danach (entspricht inputSystem.ts Signatur)
-updateInput(player, controls);
+const inputState = updateInput(player, controls);
 
 function gameLoop(time: number) {
   const deltaTime = (time - lastTime) / 1000; // seconds
   lastTime = time;
 
-  updatePhysics(player, deltaTime);
+    // apply continuous input per-frame
+    if (typeof (controls as any).applyInput === 'function') {
+      (controls as any).applyInput(inputState, player, deltaTime);
+    }
+    updatePhysics(player, deltaTime);
   renderer.beginFrame();
   // Kamera aus Player setzen, damit updateRender eine gültige View-Matrix erhält
   camera.setFromPlayer(player);
